@@ -83,6 +83,7 @@ async def load_instrument_data():
     """
     global INSTRUMENT_DATA, NIFTY_OPTION_TOKENS
     try:
+        required_columns = {"instrument_token", "tradingsymbol", "exchange", "segment", "name", "instrument_type"}
         if os.path.exists(INSTRUMENTS_CSV):
             INSTRUMENT_DATA = pd.read_csv(INSTRUMENTS_CSV)
             logging.info(f"Loaded instrument data from {INSTRUMENTS_CSV}")
@@ -91,7 +92,13 @@ async def load_instrument_data():
             logging.info(f"Loaded instrument data from {OUTPUT_TXT}")
         else:
             logging.error(f"No instrument data source found ({INSTRUMENTS_CSV} or {OUTPUT_TXT})")
-            raise Exception("No instrument data source found")
+            raise FileNotFoundError("No instrument data source found")
+
+        # Validate required columns
+        missing = required_columns - set(INSTRUMENT_DATA.columns)
+        if missing:
+            logging.error(f"Missing required columns in instrument data: {missing}")
+            raise ValueError(f"Missing required columns: {missing}")
 
         # Extract NIFTY option tokens
         nifty_options = INSTRUMENT_DATA[
@@ -152,12 +159,12 @@ async def fetch_instruments():
             logging.info(f"Mocked instrument fetch: Generated and saved {INSTRUMENTS_CSV} with {len(mock_data)} instruments")
 
         # Validate required columns
-        required_columns = {"instrument_token", "exchange", "tradingsymbol", "name", "segment", "instrument_type", "strike", "expiry"}
+        required_columns = {"instrument_token", "exchange", "tradingsymbol", "name", "segment", "instrument_type"}
         missing = required_columns - set(INSTRUMENT_DATA.columns)
         if missing:
             logging.error(f"Missing required columns in INSTRUMENT_DATA: {missing}")
             INSTRUMENT_DATA = pd.DataFrame()
-            raise Exception(f"Missing required columns: {missing}")
+            raise ValueError(f"Missing required columns: {missing}")
 
         nifty_options = INSTRUMENT_DATA[
             (INSTRUMENT_DATA["segment"] == "NFO-OPT") &
@@ -376,23 +383,31 @@ async def get_price(instrument_token: int):
     Generate mock price for a given instrument token.
     """
     try:
+        # Ensure instrument data is loaded
         if INSTRUMENT_DATA is None or INSTRUMENT_DATA.empty:
             success = await fetch_instruments()
             if not success or INSTRUMENT_DATA is None or INSTRUMENT_DATA.empty:
                 await load_instrument_data()
             if INSTRUMENT_DATA is None or INSTRUMENT_DATA.empty:
+                logging.error("Failed to load instrument data for /get_price")
                 raise HTTPException(status_code=500, detail="Instrument data not loaded: No valid data source found.")
 
         # Validate instrument token
         instrument_row = INSTRUMENT_DATA[INSTRUMENT_DATA["instrument_token"] == instrument_token]
         if instrument_row.empty:
+            logging.error(f"Invalid instrument token: {instrument_token}")
             raise HTTPException(status_code=400, detail=f"Invalid instrument token: {instrument_token}")
-        
-        trading_symbol = instrument_row["tradingsymbol"].iloc[0]
-        exchange = instrument_row["exchange"].iloc[0]
-        segment = instrument_row.get("segment", "").iloc[0]
-        name = instrument_row.get("name", "").iloc[0]
-        instrument_type = instrument_row.get("instrument_type", "").iloc[0]
+
+        # Extract instrument details
+        try:
+            trading_symbol = instrument_row["tradingsymbol"].iloc[0]
+            exchange = instrument_row["exchange"].iloc[0]
+            segment = instrument_row.get("segment", "").iloc[0]
+            name = instrument_row.get("name", "").iloc[0]
+            instrument_type = instrument_row.get("instrument_type", "").iloc[0]
+        except Exception as e:
+            logging.error(f"Error accessing instrument data for token {instrument_token}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error accessing instrument data: {str(e)}")
 
         # Generate mock price
         logging.info(f"Generating mock price for instrument token {instrument_token} ({trading_symbol}).")
@@ -400,12 +415,11 @@ async def get_price(instrument_token: int):
             last_price = MOCK_PRICE_CACHE.get(instrument_token)
             if last_price is None:
                 if segment == "NFO-OPT" and name == "NIFTY":
-                    base_price = 200.0  # Typical for NIFTY options
+                    last_price = 200.0  # Typical for NIFTY options
                 elif segment == "NSE" and name == "NIFTY 50":
-                    base_price = 25000.0  # Typical NIFTY 50 value
+                    last_price = 25000.0  # Typical NIFTY 50 value
                 else:
-                    base_price = 100.0  # Default for others
-                last_price = base_price
+                    last_price = 100.0  # Default for others
 
             if segment == "NFO-OPT" and name == "NIFTY":
                 fluctuation = last_price * 0.05  # ±5% for options
@@ -418,16 +432,20 @@ async def get_price(instrument_token: int):
 
             MOCK_PRICE_CACHE[instrument_token] = new_price
 
-        return {
+        response = {
             "instrument_token": instrument_token,
             "trading_symbol": trading_symbol,
             "exchange": exchange,
             "last_price": new_price,
             "mock": True
         }
+        logging.info(f"Returning mock price response: {response}")
+        return response
 
+    except HTTPException as e:
+        raise e
     except Exception as e:
-        logging.error(f"/get_price error: {str(e)}")
+        logging.error(f"/get_price error for instrument_token {instrument_token}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error generating mock price: {str(e)}")
 
 @app.get("/nifty_option_price")
@@ -441,6 +459,7 @@ async def nifty_option_price():
             if not success or INSTRUMENT_DATA is None or INSTRUMENT_DATA.empty:
                 await load_instrument_data()
             if INSTRUMENT_DATA is None or INSTRUMENT_DATA.empty:
+                logging.error("Instrument data not loaded for /nifty_option_price")
                 raise HTTPException(status_code=500, detail="Instrument data not loaded: No valid data source found.")
 
         # Validate required columns
@@ -561,7 +580,7 @@ async def nifty_option_price():
         return result
 
     except HTTPException as e:
-        raise e  # Re-raise HTTP exceptions
+        raise e
     except Exception as e:
         logging.error(f"/nifty_option_price error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error generating mock option prices: {str(e)}")
@@ -594,7 +613,6 @@ async def get_india_vix():
             "india_vix": vix_value,
             "mock": True
         }
-
     except Exception as e:
         logging.error(f"/india_vix error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error generating mock India VIX: {str(e)}")
