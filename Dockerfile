@@ -12,7 +12,7 @@
      COPY . .
 
      # Expose Railway's dynamic port
-     EXPOSE 8080
+     EXPOSE $PORT
 
      # Run FastAPI with Uvicorn using PORT env variable
      CMD ["sh", "-c", "uvicorn mock_api:app --host 0.0.0.0 --port $PORT"]

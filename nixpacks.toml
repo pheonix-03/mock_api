@@ -1,12 +1,12 @@
 [phases.setup]
-nixPkgs = ["gcc", "gnumake", "python310", "python310Packages.pip", "python310Packages.distutils", "ta-lib"]
+     nixPkgs = ["gcc", "gnumake", "python310", "python310Packages.pip", "python310Packages.distutils", "ta-lib"]
 
-[phases.build]
-commands = [
-  "python -m venv /opt/venv",
-  ". /opt/venv/bin/activate",
-  "pip install --no-cache-dir -r requirements.txt"
-]
+     [phases.build]
+     commands = [
+       "python -m venv /opt/venv",
+       ". /opt/venv/bin/activate",
+       "pip install --no-cache-dir -r requirements.txt"
+     ]
 
-[start]
-command = "uvicorn mock_api:app --host 0.0.0.0 --port $PORT"
+     [start]
+     command = "uvicorn mock_api:app --host 0.0.0.0 --port $PORT"
