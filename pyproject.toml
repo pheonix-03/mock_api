@@ -1,2 +1,2 @@
 [build]
-builder = "Nixpacks"
+builder = "Dockerfile"
