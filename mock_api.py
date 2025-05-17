@@ -47,7 +47,7 @@ expiry_lock = Lock()
 INSTRUMENT_DATA = None
 NIFTY_OPTION_TOKENS = []
 
-# Cache for mock prices (instrument_token: last_price)
+# Cache for mock prices (instrument_token: {"price": last_price, "timestamp": datetime})
 MOCK_PRICE_CACHE = {}
 MOCK_PRICE_CACHE_LOCK = Lock()
 
@@ -58,7 +58,6 @@ async def fetch_nse_holidays():
     """
     global NSE_HOLIDAYS
     try:
-        # Static list of 2025 NSE holidays
         mock_holidays = [
             {"tradingDate": "26-Jan-2025"},  # Republic Day
             {"tradingDate": "04-Mar-2025"},  # Mahashivratri
@@ -366,12 +365,23 @@ async def get_nifty_spot_price():
     """
     try:
         logging.info("Generating mock NIFTY 50 spot price.")
+        ist = timezone('Asia/Kolkata')
+        current_time = datetime.datetime.now(ist)
         with MOCK_PRICE_CACHE_LOCK:
-            last_price = MOCK_PRICE_CACHE.get(256265, 25000.0)  # Default for NIFTY 50
-            fluctuation = last_price * 0.001  # ±0.1%
-            new_price = last_price + random.uniform(-fluctuation, fluctuation)
-            new_price = max(20000.0, min(30000.0, new_price))
-            MOCK_PRICE_CACHE[256265] = new_price
+            cache_entry = MOCK_PRICE_CACHE.get(256265, {"price": 25000.0, "timestamp": current_time})
+            last_price = cache_entry["price"]
+            last_update = cache_entry["timestamp"]
+
+            # Only update price if >1 minute has passed
+            if (current_time - last_update).total_seconds() > 60:
+                fluctuation = last_price * 0.001  # ±0.1%
+                new_price = last_price + random.uniform(-fluctuation, fluctuation)
+                new_price = max(20000.0, min(30000.0, new_price))
+                MOCK_PRICE_CACHE[256265] = {"price": new_price, "timestamp": current_time}
+                logging.info(f"Updated NIFTY 50 spot price: {new_price}")
+            else:
+                new_price = last_price
+                logging.info(f"Reusing cached NIFTY 50 spot price: {new_price}")
         return new_price
     except Exception as e:
         logging.error(f"Mock get_nifty_spot_price error: {str(e)}")
@@ -380,7 +390,7 @@ async def get_nifty_spot_price():
 @app.get("/get_price")
 async def get_price(instrument_token: int):
     """
-    Generate mock price for a given instrument token.
+    Generate mock price for a given instrument token, synchronized with /nifty_option_price.
     """
     try:
         # Ensure instrument data is loaded
@@ -409,28 +419,34 @@ async def get_price(instrument_token: int):
             logging.error(f"Error accessing instrument data for token {instrument_token}: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error accessing instrument data: {str(e)}")
 
-        # Generate mock price
+        # Generate mock price, reusing cached price if available
         logging.info(f"Generating mock price for instrument token {instrument_token} ({trading_symbol}).")
+        ist = timezone('Asia/Kolkata')
+        current_time = datetime.datetime.now(ist)
         with MOCK_PRICE_CACHE_LOCK:
-            last_price = MOCK_PRICE_CACHE.get(instrument_token)
-            if last_price is None:
-                if segment == "NFO-OPT" and name == "NIFTY":
-                    last_price = 200.0  # Typical for NIFTY options
-                elif segment == "NSE" and name == "NIFTY 50":
-                    last_price = 25000.0  # Typical NIFTY 50 value
-                else:
-                    last_price = 100.0  # Default for others
-
-            if segment == "NFO-OPT" and name == "NIFTY":
-                fluctuation = last_price * 0.05  # ±5% for options
-                new_price = last_price + random.uniform(-fluctuation, fluctuation)
-                new_price = max(10.0, min(500.0, new_price))
+            cache_entry = MOCK_PRICE_CACHE.get(instrument_token)
+            if cache_entry and (current_time - cache_entry["timestamp"]).total_seconds() <= 60:
+                # Reuse cached price within 1 minute
+                new_price = cache_entry["price"]
+                logging.info(f"Reusing cached price for token {instrument_token}: {new_price}")
             else:
-                fluctuation = last_price * 0.001  # ±0.1% for NIFTY 50 or others
-                new_price = last_price + random.uniform(-fluctuation, fluctuation)
-                new_price = max(20000.0, min(30000.0, new_price)) if name == "NIFTY 50" else max(10.0, min(10000.0, new_price))
+                # Generate new price
+                last_price = cache_entry["price"] if cache_entry else (
+                    200.0 if segment == "NFO-OPT" and name == "NIFTY" else
+                    25000.0 if segment == "NSE" and name == "NIFTY 50" else
+                    100.0
+                )
+                if segment == "NFO-OPT" and name == "NIFTY":
+                    fluctuation = last_price * 0.10  # ±10% for options
+                    new_price = last_price + random.uniform(-fluctuation, fluctuation)
+                    new_price = max(10.0, min(500.0, new_price))
+                else:
+                    fluctuation = last_price * 0.001  # ±0.1% for NIFTY 50 or others
+                    new_price = last_price + random.uniform(-fluctuation, fluctuation)
+                    new_price = max(20000.0, min(30000.0, new_price)) if name == "NIFTY 50" else max(10.0, min(10000.0, new_price))
 
-            MOCK_PRICE_CACHE[instrument_token] = new_price
+                MOCK_PRICE_CACHE[instrument_token] = {"price": new_price, "timestamp": current_time}
+                logging.info(f"Updated price for token {instrument_token}: {new_price}")
 
         response = {
             "instrument_token": instrument_token,
@@ -451,7 +467,7 @@ async def get_price(instrument_token: int):
 @app.get("/nifty_option_price")
 async def nifty_option_price():
     """
-    Generate mock NIFTY 50 LTP and CE/PE option prices for the nearest weekly expiry.
+    Generate mock NIFTY 50 LTP and CE/PE option prices for the nearest weekly expiry, synchronized with /get_price.
     """
     try:
         if INSTRUMENT_DATA is None or INSTRUMENT_DATA.empty:
@@ -537,20 +553,29 @@ async def nifty_option_price():
             raise HTTPException(status_code=400, detail="Invalid option symbols generated")
 
         # Generate mock LTPs for CE and PE options
+        ist = timezone('Asia/Kolkata')
+        current_time = datetime.datetime.now(ist)
         with MOCK_PRICE_CACHE_LOCK:
             ce_token = ce_option["instrument_token"].iloc[0]
             pe_token = pe_option["instrument_token"].iloc[0]
-            ce_last_price = MOCK_PRICE_CACHE.get(ce_token, 200.0)
-            pe_last_price = MOCK_PRICE_CACHE.get(pe_token, 200.0)
+            ce_cache = MOCK_PRICE_CACHE.get(ce_token)
+            pe_cache = MOCK_PRICE_CACHE.get(pe_token)
 
-            # Apply fluctuations
-            for token, last_price in [(ce_token, ce_last_price), (pe_token, pe_last_price)]:
-                fluctuation = last_price * 0.05  # ±5%
-                new_price = last_price + random.uniform(-fluctuation, fluctuation)
-                new_price = max(10.0, min(500.0, new_price))
-                MOCK_PRICE_CACHE[token] = new_price
-            ce_ltp = MOCK_PRICE_CACHE[ce_token]
-            pe_ltp = MOCK_PRICE_CACHE[pe_token]
+            # Apply fluctuations only if no recent price or >1 minute old
+            for token, cache in [(ce_token, ce_cache), (pe_token, pe_cache)]:
+                if cache and (current_time - cache["timestamp"]).total_seconds() <= 60:
+                    new_price = cache["price"]
+                    logging.info(f"Reusing cached price for token {token}: {new_price}")
+                else:
+                    last_price = cache["price"] if cache else 200.0
+                    fluctuation = last_price * 0.10  # ±10%
+                    new_price = last_price + random.uniform(-fluctuation, fluctuation)
+                    new_price = max(10.0, min(500.0, new_price))
+                    MOCK_PRICE_CACHE[token] = {"price": new_price, "timestamp": current_time}
+                    logging.info(f"Updated price for token {token}: {new_price}")
+
+            ce_ltp = MOCK_PRICE_CACHE[ce_token]["price"]
+            pe_ltp = MOCK_PRICE_CACHE[pe_token]["price"]
 
         # Build response
         result = {
