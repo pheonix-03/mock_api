@@ -58,7 +58,7 @@ async def fetch_nse_holidays():
     """
     global NSE_HOLIDAYS
     try:
-        # Static list of 2025 NSE holidays (example, adjust as needed)
+        # Static list of 2025 NSE holidays
         mock_holidays = [
             {"tradingDate": "26-Jan-2025"},  # Republic Day
             {"tradingDate": "04-Mar-2025"},  # Mahashivratri
@@ -67,7 +67,6 @@ async def fetch_nse_holidays():
             {"tradingDate": "15-Aug-2025"},  # Independence Day
             {"tradingDate": "02-Oct-2025"},  # Gandhi Jayanti
             {"tradingDate": "09-Nov-2025"},  # Diwali
-            # Add more holidays as needed
         ]
         NSE_HOLIDAYS = [
             datetime.datetime.strptime(item["tradingDate"], "%d-%b-%Y").date()
@@ -109,16 +108,15 @@ async def load_instrument_data():
 async def fetch_instruments():
     """
     Mock fetching instrument data and save as CSV.
-    Loads from local instruments.csv or generates minimal mock data if not present.
+    Loads from local instruments.csv or generates expanded mock data if not present.
     """
     try:
         global INSTRUMENT_DATA, NIFTY_OPTION_TOKENS
         if os.path.exists(INSTRUMENTS_CSV):
-            # Use existing instruments.csv
             INSTRUMENT_DATA = pd.read_csv(INSTRUMENTS_CSV)
             logging.info(f"Mocked instrument fetch: Loaded existing {INSTRUMENTS_CSV}")
         else:
-            # Generate minimal mock instrument data
+            # Generate expanded mock instrument data
             mock_data = [
                 {
                     "instrument_token": 256265,
@@ -127,32 +125,39 @@ async def fetch_instruments():
                     "name": "NIFTY 50",
                     "segment": "NSE",
                     "instrument_type": "INDEX"
-                },
-                {
-                    "instrument_token": 12345,
-                    "exchange": "NFO",
-                    "tradingsymbol": "NIFTY25MAY25000CE",
-                    "name": "NIFTY",
-                    "segment": "NFO-OPT",
-                    "instrument_type": "CE",
-                    "strike": 25000,
-                    "expiry": "2025-05-29"
-                },
-                {
-                    "instrument_token": 12346,
-                    "exchange": "NFO",
-                    "tradingsymbol": "NIFTY25MAY25000PE",
-                    "name": "NIFTY",
-                    "segment": "NFO-OPT",
-                    "instrument_type": "PE",
-                    "strike": 25000,
-                    "expiry": "2025-05-29"
                 }
             ]
+            # Add NIFTY options for multiple strikes and expiries
+            strikes = [24500, 24750, 25000, 25250, 25500]
+            expiries = ["2025-05-22", "2025-05-29", "2025-06-05"]
+            token = 12345
+            for expiry in expiries:
+                for strike in strikes:
+                    for opt_type in ["CE", "PE"]:
+                        mock_data.append({
+                            "instrument_token": token,
+                            "exchange": "NFO",
+                            "tradingsymbol": f"NIFTY25{expiry[5:7]}{expiry[8:10]}{strike}{opt_type}",
+                            "name": "NIFTY",
+                            "segment": "NFO-OPT",
+                            "instrument_type": opt_type,
+                            "strike": strike,
+                            "expiry": expiry
+                        })
+                        token += 1
+
             INSTRUMENT_DATA = pd.DataFrame(mock_data)
             async with aiofiles.open(INSTRUMENTS_CSV, "w") as f:
                 await f.write(INSTRUMENT_DATA.to_csv(index=False))
-            logging.info(f"Mocked instrument fetch: Generated and saved {INSTRUMENTS_CSV}")
+            logging.info(f"Mocked instrument fetch: Generated and saved {INSTRUMENTS_CSV} with {len(mock_data)} instruments")
+
+        # Validate required columns
+        required_columns = {"instrument_token", "exchange", "tradingsymbol", "name", "segment", "instrument_type", "strike", "expiry"}
+        missing = required_columns - set(INSTRUMENT_DATA.columns)
+        if missing:
+            logging.error(f"Missing required columns in INSTRUMENT_DATA: {missing}")
+            INSTRUMENT_DATA = pd.DataFrame()
+            raise Exception(f"Missing required columns: {missing}")
 
         nifty_options = INSTRUMENT_DATA[
             (INSTRUMENT_DATA["segment"] == "NFO-OPT") &
@@ -438,6 +443,13 @@ async def nifty_option_price():
             if INSTRUMENT_DATA is None or INSTRUMENT_DATA.empty:
                 raise HTTPException(status_code=500, detail="Instrument data not loaded: No valid data source found.")
 
+        # Validate required columns
+        required_columns = {"segment", "name", "instrument_type", "strike", "expiry", "instrument_token", "tradingsymbol"}
+        missing = required_columns - set(INSTRUMENT_DATA.columns)
+        if missing:
+            logging.error(f"Missing required columns in INSTRUMENT_DATA: {missing}")
+            raise HTTPException(status_code=500, detail=f"Missing required columns: {missing}")
+
         # Generate mock NIFTY 50 LTP
         nifty_ltp = await get_nifty_spot_price()
         logging.info(f"Generated mock NIFTY 50 LTP: {nifty_ltp}")
@@ -452,38 +464,46 @@ async def nifty_option_price():
         logging.info(f"Searching for CE strike {ce_strike} and PE strike {pe_strike} on expiry {expiry_str}")
 
         # Find CE and PE options
-        ce_option = INSTRUMENT_DATA[
-            (INSTRUMENT_DATA["segment"] == "NFO-OPT") &
-            (INSTRUMENT_DATA["name"] == "NIFTY") &
-            (INSTRUMENT_DATA["instrument_type"] == "CE") &
-            (INSTRUMENT_DATA["strike"] == ce_strike) &
-            (INSTRUMENT_DATA["expiry"] == expiry_str)
-        ]
-        pe_option = INSTRUMENT_DATA[
-            (INSTRUMENT_DATA["segment"] == "NFO-OPT") &
-            (INSTRUMENT_DATA["name"] == "NIFTY") &
-            (INSTRUMENT_DATA["instrument_type"] == "PE") &
-            (INSTRUMENT_DATA["strike"] == pe_strike) &
-            (INSTRUMENT_DATA["expiry"] == expiry_str)
-        ]
-
-        if ce_option.empty or pe_option.empty:
-            logging.info(f"Fallback: Selecting closest strikes for CE {ce_strike} and PE {pe_strike}")
+        try:
             ce_option = INSTRUMENT_DATA[
                 (INSTRUMENT_DATA["segment"] == "NFO-OPT") &
                 (INSTRUMENT_DATA["name"] == "NIFTY") &
                 (INSTRUMENT_DATA["instrument_type"] == "CE") &
+                (INSTRUMENT_DATA["strike"] == ce_strike) &
                 (INSTRUMENT_DATA["expiry"] == expiry_str)
-            ].sort_values(by="strike")
-            ce_option = ce_option.iloc[(ce_option["strike"] - ce_strike).abs().argsort()[:1]] if not ce_option.empty else pd.DataFrame()
-
+            ]
             pe_option = INSTRUMENT_DATA[
                 (INSTRUMENT_DATA["segment"] == "NFO-OPT") &
                 (INSTRUMENT_DATA["name"] == "NIFTY") &
                 (INSTRUMENT_DATA["instrument_type"] == "PE") &
+                (INSTRUMENT_DATA["strike"] == pe_strike) &
                 (INSTRUMENT_DATA["expiry"] == expiry_str)
-            ].sort_values(by="strike")
-            pe_option = pe_option.iloc[(pe_option["strike"] - pe_strike).abs().argsort()[:1]] if not pe_option.empty else pd.DataFrame()
+            ]
+        except Exception as e:
+            logging.error(f"Error filtering INSTRUMENT_DATA for options: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error filtering option data: {str(e)}")
+
+        if ce_option.empty or pe_option.empty:
+            logging.info(f"Fallback: Selecting closest strikes for CE {ce_strike} and PE {pe_strike}")
+            try:
+                ce_option = INSTRUMENT_DATA[
+                    (INSTRUMENT_DATA["segment"] == "NFO-OPT") &
+                    (INSTRUMENT_DATA["name"] == "NIFTY") &
+                    (INSTRUMENT_DATA["instrument_type"] == "CE") &
+                    (INSTRUMENT_DATA["expiry"] == expiry_str)
+                ].sort_values(by="strike")
+                ce_option = ce_option.iloc[(ce_option["strike"] - ce_strike).abs().argsort()[:1]] if not ce_option.empty else pd.DataFrame()
+
+                pe_option = INSTRUMENT_DATA[
+                    (INSTRUMENT_DATA["segment"] == "NFO-OPT") &
+                    (INSTRUMENT_DATA["name"] == "NIFTY") &
+                    (INSTRUMENT_DATA["instrument_type"] == "PE") &
+                    (INSTRUMENT_DATA["expiry"] == expiry_str)
+                ].sort_values(by="strike")
+                pe_option = pe_option.iloc[(pe_option["strike"] - pe_strike).abs().argsort()[:1]] if not pe_option.empty else pd.DataFrame()
+            except Exception as e:
+                logging.error(f"Error in fallback option selection: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Error in fallback option selection: {str(e)}")
 
             if ce_option.empty or pe_option.empty:
                 logging.error(f"No NIFTY options found for strikes {ce_strike} (CE) and {pe_strike} (PE) on expiry {expiry_str}")
@@ -494,6 +514,7 @@ async def nifty_option_price():
         pe_symbol = pe_option["tradingsymbol"].iloc[0] if not pe_option.empty else None
         logging.info(f"Generated symbols: CE={ce_symbol}, PE={pe_symbol}")
         if not ce_symbol or not pe_symbol:
+            logging.error("Invalid option symbols generated")
             raise HTTPException(status_code=400, detail="Invalid option symbols generated")
 
         # Generate mock LTPs for CE and PE options
@@ -539,6 +560,8 @@ async def nifty_option_price():
         logging.info(f"Returning mock response: {result}")
         return result
 
+    except HTTPException as e:
+        raise e  # Re-raise HTTP exceptions
     except Exception as e:
         logging.error(f"/nifty_option_price error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error generating mock option prices: {str(e)}")
