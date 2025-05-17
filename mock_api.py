@@ -437,7 +437,7 @@ async def get_price(instrument_token: int):
                     100.0
                 )
                 if segment == "NFO-OPT" and name == "NIFTY":
-                    fluctuation = last_price * 0.10  # ±10% for options
+                    fluctuation = last_price * 0.15  # ±15% for options
                     new_price = last_price + random.uniform(-fluctuation, fluctuation)
                     new_price = max(10.0, min(500.0, new_price))
                 else:
@@ -568,7 +568,7 @@ async def nifty_option_price():
                     logging.info(f"Reusing cached price for token {token}: {new_price}")
                 else:
                     last_price = cache["price"] if cache else 200.0
-                    fluctuation = last_price * 0.10  # ±10%
+                    fluctuation = last_price * 0.15  # ±15%
                     new_price = last_price + random.uniform(-fluctuation, fluctuation)
                     new_price = max(10.0, min(500.0, new_price))
                     MOCK_PRICE_CACHE[token] = {"price": new_price, "timestamp": current_time}
