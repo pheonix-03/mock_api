@@ -1,1 +1,15 @@
-fastapi uvicorn kiteconnect pandas apscheduler psutil numpy>=1.24.0 pandas-ta joblib pytz requests aiofiles aiohttp python-dotenv tenacity
+fastapi
+uvicorn
+kiteconnect
+pandas
+apscheduler
+psutil
+numpy>=1.24.0
+pandas-ta
+joblib
+pytz
+requests
+aiofiles
+aiohttp
+python-dotenv
+tenacity
