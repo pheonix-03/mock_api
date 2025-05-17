@@ -9,6 +9,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pytz import timezone
 import aiofiles
+import aiohttp
 import random
 import numpy as np
 from dotenv import load_dotenv
@@ -32,7 +33,7 @@ OUTPUT_TXT = "output.txt"
 CSV_FILE = "new_historical_data.csv"
 ACCESS_TOKEN_FILE = "mock_access_token.txt"
 
-# Global NSE holidays (mocked, empty for simplicity)
+# Global NSE holidays (mocked with static 2025 holidays)
 NSE_HOLIDAYS = []
 
 # Thread-safe manual expiry dates
@@ -50,16 +51,33 @@ NIFTY_OPTION_TOKENS = []
 MOCK_PRICE_CACHE = {}
 MOCK_PRICE_CACHE_LOCK = Lock()
 
-# Mock NSE holidays fetch
 async def fetch_nse_holidays():
     """
-    Mock NSE holidays fetch (returns empty list for simplicity).
+    Mock fetching trading holidays and store in NSE_HOLIDAYS.
+    Uses a static list of 2025 holidays instead of NSE API.
     """
     global NSE_HOLIDAYS
-    NSE_HOLIDAYS = []
-    logging.info("Mocked NSE holidays fetch: empty list")
+    try:
+        # Static list of 2025 NSE holidays (example, adjust as needed)
+        mock_holidays = [
+            {"tradingDate": "26-Jan-2025"},  # Republic Day
+            {"tradingDate": "04-Mar-2025"},  # Mahashivratri
+            {"tradingDate": "20-Mar-2025"},  # Holi
+            {"tradingDate": "14-Apr-2025"},  # Dr. Ambedkar Jayanti
+            {"tradingDate": "15-Aug-2025"},  # Independence Day
+            {"tradingDate": "02-Oct-2025"},  # Gandhi Jayanti
+            {"tradingDate": "09-Nov-2025"},  # Diwali
+            # Add more holidays as needed
+        ]
+        NSE_HOLIDAYS = [
+            datetime.datetime.strptime(item["tradingDate"], "%d-%b-%Y").date()
+            for item in mock_holidays
+        ]
+        logging.info(f"Mocked fetch of {len(NSE_HOLIDAYS)} NSE trading holidays")
+    except Exception as e:
+        logging.error(f"Error mocking NSE holidays: {str(e)}")
+        NSE_HOLIDAYS = []
 
-# Load instrument data from CSV or output.txt
 async def load_instrument_data():
     """
     Load instrument data from instruments.csv or output.txt and extract NIFTY option tokens.
@@ -88,24 +106,69 @@ async def load_instrument_data():
         INSTRUMENT_DATA = pd.DataFrame()
         raise
 
-# Mock instrument data fetch
 async def fetch_instruments():
     """
-    Mock instrument data fetch by loading from file.
+    Mock fetching instrument data and save as CSV.
+    Loads from local instruments.csv or generates minimal mock data if not present.
     """
     try:
         global INSTRUMENT_DATA, NIFTY_OPTION_TOKENS
-        await load_instrument_data()
-        logging.info(f"Mocked instrument data fetch. Loaded {len(INSTRUMENT_DATA)} records.")
+        if os.path.exists(INSTRUMENTS_CSV):
+            # Use existing instruments.csv
+            INSTRUMENT_DATA = pd.read_csv(INSTRUMENTS_CSV)
+            logging.info(f"Mocked instrument fetch: Loaded existing {INSTRUMENTS_CSV}")
+        else:
+            # Generate minimal mock instrument data
+            mock_data = [
+                {
+                    "instrument_token": 256265,
+                    "exchange": "NSE",
+                    "tradingsymbol": "NIFTY 50",
+                    "name": "NIFTY 50",
+                    "segment": "NSE",
+                    "instrument_type": "INDEX"
+                },
+                {
+                    "instrument_token": 12345,
+                    "exchange": "NFO",
+                    "tradingsymbol": "NIFTY25MAY25000CE",
+                    "name": "NIFTY",
+                    "segment": "NFO-OPT",
+                    "instrument_type": "CE",
+                    "strike": 25000,
+                    "expiry": "2025-05-29"
+                },
+                {
+                    "instrument_token": 12346,
+                    "exchange": "NFO",
+                    "tradingsymbol": "NIFTY25MAY25000PE",
+                    "name": "NIFTY",
+                    "segment": "NFO-OPT",
+                    "instrument_type": "PE",
+                    "strike": 25000,
+                    "expiry": "2025-05-29"
+                }
+            ]
+            INSTRUMENT_DATA = pd.DataFrame(mock_data)
+            async with aiofiles.open(INSTRUMENTS_CSV, "w") as f:
+                await f.write(INSTRUMENT_DATA.to_csv(index=False))
+            logging.info(f"Mocked instrument fetch: Generated and saved {INSTRUMENTS_CSV}")
+
+        nifty_options = INSTRUMENT_DATA[
+            (INSTRUMENT_DATA["segment"] == "NFO-OPT") &
+            (INSTRUMENT_DATA["name"] == "NIFTY")
+        ]
+        NIFTY_OPTION_TOKENS = nifty_options["instrument_token"].tolist()
+        logging.info(f"Mocked fetch: Found {len(NIFTY_OPTION_TOKENS)} NIFTY option tokens.")
         return True
     except Exception as e:
-        logging.error(f"Mock instrument fetch error: {str(e)}")
+        logging.error(f"Error mocking instruments: {str(e)}")
         return False
 
 @app.on_event("startup")
 async def startup():
     """
-    Initialize mock API, load instrument data.
+    Initialize mock API, fetch NSE holidays, and load/fetch instrument data.
     """
     logging.info("Starting mock API...")
     await fetch_nse_holidays()
