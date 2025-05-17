@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+kiteconnect
+pandas
+apscheduler
+psutil
+numpy==1.23.5
+pandas-ta
+joblib
+pytz
+requests
+aiofiles
+aiohttp
+python-dotenv
+tenacity
