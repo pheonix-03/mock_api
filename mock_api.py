@@ -262,7 +262,7 @@ async def get_access_token():
 @app.get("/fetch_historical_data")
 async def fetch_last_1_minute_data():
     """
-    Generate mock 1-minute NIFTY 50 data and save to CSV.
+    Generate mock 1-minute NIFTY 50 data and return it in JSON format.
     """
     try:
         instrument_token = 256265  # NIFTY 50
@@ -275,27 +275,30 @@ async def fetch_last_1_minute_data():
         base_price = 25000.0  # Typical NIFTY 50 value for 2025
         fluctuation = base_price * 0.001  # ±0.1% or ±25 points
         close_price = base_price + random.uniform(-fluctuation, fluctuation)
-        open_price = close_price + random.uniform(-fluctuation/2, fluctuation/2)
-        high_price = max(open_price, close_price) + random.uniform(0, fluctuation/2)
-        low_price = min(open_price, close_price) - random.uniform(0, fluctuation/2)
-        volume = random.randint(50000, 150000)  # Realistic volume
+        open_price = close_price + random.uniform(-fluctuation / 2, fluctuation / 2)
+        high_price = max(open_price, close_price) + random.uniform(0, fluctuation / 2)
+        low_price = min(open_price, close_price) - random.uniform(0, fluctuation / 2)
+        volume = random.randint(50000, 150000)
 
         mock_data = [{
             "date": end_time.strftime("%Y-%m-%d %H:%M:%S+05:30"),
-            "open": open_price,
-            "high": high_price,
-            "low": low_price,
-            "close": close_price,
+            "open": round(open_price, 2),
+            "high": round(high_price, 2),
+            "low": round(low_price, 2),
+            "close": round(close_price, 2),
             "volume": volume
         }]
         df = pd.DataFrame(mock_data)
+
+        # Save to CSV (still optional)
         async with aiofiles.open(CSV_FILE, "w") as f:
             await f.write(df.to_csv(index=False))
         logging.info(f"Saved mock data (1 row) to {CSV_FILE}")
+
         return {
             "status": "success",
-            "message": f"Mock 1-minute data saved to {CSV_FILE}",
-            "rows_saved": len(df),
+            "rows": len(df),
+            "data": df.to_dict(orient="records"),  # ✅ Return data in JSON
             "mock": True
         }
 
